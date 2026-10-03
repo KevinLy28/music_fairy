@@ -46,7 +46,6 @@ The installer:
 3. downloads the small vosk model (~40MB)
 4. writes `~/.config/mpd/mpd.conf` and starts MPD (skips if MPD already runs)
 5. installs `music-fairy` to `~/.local/bin` + default config to `~/.config/music-fairy/config`
-6. binds the `s` key to `music-fairy` if a desktop session is detected (see Keybind below)
 
 Re-run `./install.sh` any time to update yt-dlp/vosk (YouTube breaks often;
 keep yt-dlp current).
@@ -60,18 +59,13 @@ music-fairy              # listen, then search & play
 
 Say things like *"bohemian rhapsody"* or *"play daft punk hard harder..."*.
 
-### Keybind (automatic)
+### Bind to a key
 
-`install.sh` binds the **`s`** key to `music-fairy` automatically when it
-detects a desktop session — GNOME, Openbox (Raspberry Pi OS), labwc, i3,
-with an sxhkd fallback. No graphical session (headless Pi, SSH)? It skips
-this step; just run `music-fairy` manually, via SSH, or from a GPIO button.
-
-```sh
-MUSIC_FAIRY_KEY=super+s ./install.sh   # re-run to rebind (recommended for daily use:
-                                       # bare "s" also fires while typing)
-MUSIC_FAIRY_KEYBIND=0  ./install.sh    # don't touch keybinds at all
-```
+- **GNOME**: Settings → Keyboard → Keyboard Shortcuts → Custom Shortcuts →
+  command `music-fairy`
+- **i3**: `bindsym $mod+m exec music-fairy`
+- **sxhkd**: `super + m` newline `music-fairy`
+- **headless/RPi**: a GPIO button running `music-fairy` (e.g. via `gpiozero`)
 
 ### Stop / control playback
 
