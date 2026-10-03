@@ -95,8 +95,81 @@ case ":$PATH:" in
     *) warn "$BIN_DIR is not in PATH - add it: export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
 esac
 
+# 6. keybind (default: bare "s"; change with e.g. MUSIC_FAIRY_KEY=super+s ./install.sh)
+KEY="${MUSIC_FAIRY_KEY:-s}"
+
+gnome_key() { case "$1" in super+*) printf '<Super>%s' "${1#super+}";; *) printf '%s' "$1";; esac; }
+# shellcheck disable=SC2016  # i3 wants a literal $mod
+i3_key()    { case "$1" in super+*) printf '$mod+%s' "${1#super+}";; *) printf '%s' "$1";; esac; }
+xml_key()   { case "$1" in super+*) printf 'W-%s' "${1#super+}";; *) printf '%s' "$1";; esac; }
+sxhkd_key() { case "$1" in super+*) printf 'super + %s' "${1#super+}";; *) printf '%s' "$1";; esac; }
+
+add_xml_keybind() { # $1 = rc.xml path (openbox/labwc)
+    KEY_XML="$(xml_key "$KEY")" python3 - "$1" <<'PYEOF'
+import os, sys, pathlib
+p = pathlib.Path(sys.argv[1])
+s = p.read_text()
+if "music-fairy" in s:
+    print("keybind already present")
+    sys.exit(0)
+if "</keyboard>" not in s:
+    print("no <keyboard> section found - skipping")
+    sys.exit(0)
+block = ('    <keybind key="%s">\n'
+         '      <action name="Execute">\n'
+         '        <command>music-fairy</command>\n'
+         '      </action>\n'
+         '    </keybind>\n'
+         '  ') % os.environ["KEY_XML"]
+p.write_text(s.replace("</keyboard>", block + "</keyboard>", 1))
+print("keybind added")
+PYEOF
+}
+
+if [ "${MUSIC_FAIRY_KEYBIND:-1}" != "1" ]; then
+    log "Skipping keybind setup (MUSIC_FAIRY_KEYBIND=$MUSIC_FAIRY_KEYBIND)"
+elif [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+    warn "no graphical session detected - skipping keybind setup"
+    echo "       run install.sh from a desktop terminal on the Pi, or trigger music-fairy via SSH/GPIO button"
+elif printf '%s' "${XDG_CURRENT_DESKTOP:-}" | grep -qi gnome && command -v gsettings >/dev/null 2>&1; then
+    log "Adding GNOME keybinding: $KEY"
+    KB_PATH="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/music-fairy/"
+    SCHEMA="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:$KB_PATH"
+    gsettings set "$SCHEMA" name "Music Fairy"
+    gsettings set "$SCHEMA" command "music-fairy"
+    gsettings set "$SCHEMA" binding "$(gnome_key "$KEY")" || warn "GNOME rejected this key"
+    EXISTING="$(gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings)"
+    case "$EXISTING" in
+        *music-fairy*) ;;
+        '@as []') gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "['$KB_PATH']" ;;
+        *) gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "${EXISTING%]}, '$KB_PATH']" ;;
+    esac
+elif [ -f "$HOME/.config/openbox/rc.xml" ]; then
+    log "Adding Openbox keybinding: $KEY"
+    add_xml_keybind "$HOME/.config/openbox/rc.xml"
+    command -v openbox >/dev/null 2>&1 && openbox --reconfigure || true
+elif [ -f "$HOME/.config/labwc/rc.xml" ]; then
+    log "Adding labwc keybinding: $KEY"
+    add_xml_keybind "$HOME/.config/labwc/rc.xml"
+elif [ -f "$HOME/.config/i3/config" ]; then
+    log "Adding i3 keybinding: $KEY"
+    grep -q music-fairy "$HOME/.config/i3/config" 2>/dev/null \
+        || printf '\n# music-fairy\nbindsym %s exec music-fairy\n' "$(i3_key "$KEY")" >> "$HOME/.config/i3/config"
+else
+    log "No known DE detected - writing sxhkd fallback config"
+    mkdir -p "$HOME/.config/sxhkd"
+    grep -q music-fairy "$HOME/.config/sxhkd/sxhkdrc" 2>/dev/null \
+        || printf '\n# music-fairy\n%s\n\tmusic-fairy\n' "$(sxhkd_key "$KEY")" >> "$HOME/.config/sxhkd/sxhkdrc"
+    warn "sxhkd must be running for this to take effect: sudo apt install sxhkd"
+fi
+
+case "$KEY" in
+    *+*|W-*|S-*|C-*|A-*) ;;
+    *) warn "keybind '$KEY' is a bare key: pressing s while typing will trigger music-fairy."
+       echo "       fine for testing; for daily use re-run with: MUSIC_FAIRY_KEY=super+s ./install.sh" ;;
+esac
+
 log "Done!"
 echo "  1. test your mic:   music-fairy --test-mic"
-echo "  2. play something:  music-fairy    (then say a song name)"
-echo "  3. optional: bind music-fairy to a key in your WM/DE"
+echo "  2. press '$KEY' (or run: music-fairy), then say a song name"
 echo "  config: ~/.config/music-fairy/config"
