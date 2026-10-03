@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# music-fairy - voice-controlled YouTube music player for Linux (MPD)
+# Fixed fork of https://github.com/bugswriter/music_fairy (GPL-3)
+set -u
+
+PROG="music-fairy"
+DATA_DIR="${MUSIC_FAIRY_DATA_DIR:-$HOME/.local/share/music_fairy}"
+CONFIG_FILE="${MUSIC_FAIRY_CONFIG:-$HOME/.config/music-fairy/config}"
+
+# shellcheck source=/dev/null
+[ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+
+VENV="$DATA_DIR/venv"
+[ -d "$VENV/bin" ] && PATH="$VENV/bin:$PATH"
+
+VOSK_MODEL_PATH="${VOSK_MODEL_PATH:-$DATA_DIR/vosk-model-small-en-us-0.15}"
+MIC_DEVICE="${MIC_DEVICE:-default}"
+LISTEN_SECONDS="${LISTEN_SECONDS:-5}"
+SAY_ENABLED="${SAY_ENABLED:-1}"
+YT_QUERY_SUFFIX="${YT_QUERY_SUFFIX:-}"
+CACHE_DIR="${CACHE_DIR:-$HOME/.cache/music-fairy}"
+
+WAV="$CACHE_DIR/input.wav"
+TXT="$CACHE_DIR/input.txt"
+
+notify() {
+    command -v notify-send >/dev/null 2>&1 && notify-send "$PROG" "$1" || true
+}
+
+say() {
+    [ "$SAY_ENABLED" = "1" ] || return 0
+    if command -v espeak-ng >/dev/null 2>&1; then
+        espeak-ng -s 150 "$1" >/dev/null 2>&1
+    elif command -v espeak >/dev/null 2>&1; then
+        espeak -s 150 "$1" >/dev/null 2>&1
+    fi
+}
+
+die() {
+    printf '%s: %s\n' "$PROG" "$*" >&2
+    notify "$*"
+    exit 1
+}
+
+need() {
+    command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1 (run install.sh)"
+}
+
+usage() {
+    cat <<EOF
+usage: $PROG [option]
+
+Speaks a song name into the mic, finds it on YouTube and plays it via MPD.
+
+options:
+  (none)        listen ${LISTEN_SECONDS}s, transcribe, search YouTube, play
+  --test-mic    record ${LISTEN_SECONDS}s, print transcription, play nothing
+  -h, --help    show this help
+
+config: $CONFIG_FILE
+EOF
+}
+
+capture() {
+    ffmpeg -y -loglevel error -f alsa -i "$MIC_DEVICE" \
+        -acodec pcm_s16le -ac 1 -ar 16000 -t "$LISTEN_SECONDS" "$WAV" \
+        || die "microphone capture failed (check MIC_DEVICE='$MIC_DEVICE', see: arecord -l)"
+}
+
+transcribe() {
+    vosk-transcriber -m "$VOSK_MODEL_PATH" -i "$WAV" -o "$TXT" >/dev/null 2>&1 \
+        || die "transcription failed (model: $VOSK_MODEL_PATH)"
+    AUDIO_INPUT="$(head -n 1 "$TXT" | tr -d '\r')"
+}
+
+case "${1:-}" in
+    -h|--help)
+        usage
+        exit 0
+        ;;
+    --test-mic)
+        mkdir -p "$CACHE_DIR"
+        need ffmpeg
+        need vosk-transcriber
+        [ -d "$VOSK_MODEL_PATH" ] || die "vosk model not found at $VOSK_MODEL_PATH (run install.sh)"
+        echo "listening for ${LISTEN_SECONDS}s..."
+        capture
+        transcribe
+        echo "heard: ${AUDIO_INPUT:-<nothing>}"
+        exit 0
+        ;;
+    "")
+        ;;
+    *)
+        usage
+        exit 1
+        ;;
+esac
+
+mkdir -p "$CACHE_DIR"
+need ffmpeg
+need mpc
+need yt-dlp
+need vosk-transcriber
+[ -d "$VOSK_MODEL_PATH" ] || die "vosk model not found at $VOSK_MODEL_PATH (run install.sh)"
+
+if ! mpc status >/dev/null 2>&1; then
+    if [ -f "$HOME/.config/mpd/mpd.conf" ] && command -v mpd >/dev/null 2>&1; then
+        mpd "$HOME/.config/mpd/mpd.conf" 2>/dev/null || true
+        sleep 1
+    fi
+    mpc status >/dev/null 2>&1 || die "MPD is not running and could not be started"
+fi
+
+mpc -q stop
+mpc -q clear
+
+say "Listening"
+notify "Listening... speak the song name"
+capture
+transcribe
+
+[ -n "$AUDIO_INPUT" ] || die "I didn't catch that"
+printf '%s: heard: %s\n' "$PROG" "$AUDIO_INPUT"
+
+query="${AUDIO_INPUT#play }"
+query="${query#play the }"
+[ -n "$YT_QUERY_SUFFIX" ] && query="$query $YT_QUERY_SUFFIX"
+
+say "Playing $query" &
+notify "Searching YouTube for: $query"
+
+audio_url=""
+title=""
+{ read -r audio_url; read -r title; } < <(yt-dlp -q --no-warnings \
+    -f 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio' \
+    --print "%(url)s" --print "%(title)s" \
+    "ytsearch1:$query" 2>/dev/null) || true
+
+[ -n "$audio_url" ] || die "no YouTube result for '$query'"
+
+mpc -q add "$audio_url" || die "could not add stream to MPD"
+mpc -q play || die "MPD playback failed"
+
+notify "Now playing: ${title:-unknown}"
+printf '%s: now playing: %s\n' "$PROG" "${title:-unknown}"
